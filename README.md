@@ -63,3 +63,8 @@ Requiere Java 21 y Maven.
 ## Entrega
 
 Compártenos un repositorio con el proyecto completo.
+
+## Documentación de la solución
+
+- [Arquitectura y aplicación de SOLID](ARCHITECTURE.md)
+- [Decisiones, supuestos y preparación para producción](DECISIONS.md)

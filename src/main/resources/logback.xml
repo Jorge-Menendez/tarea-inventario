@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX,UTC} %-5level [%thread] %logger{40} traceId=%X{traceId:-none} operationId=%X{operationId:-none} parentOperationId=%X{parentOperationId:-none} operation=%X{operation:-none} orderId=%X{orderId:-none} sku=%X{sku:-none} quantity=%X{quantity:-none} %msg%n%ex</pattern>
+        </encoder>
+    </appender>
+    <logger name="com.store.inventory" level="${INVENTORY_LOG_LEVEL:-INFO}"/>
+    <root level="WARN">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

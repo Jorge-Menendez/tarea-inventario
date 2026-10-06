@@ -21,6 +21,10 @@ public final class ReservationEntry {
         return reservation.expiresAt();
     }
 
+    public String status() {
+        return state.name();
+    }
+
     public Reservation retry(String sku, int quantity) {
         if (!reservation.sku().equals(sku) || reservation.quantity() != quantity) {
             throw new IllegalArgumentException("Order id reused with different details: " + reservation.orderId());
@@ -38,7 +42,7 @@ public final class ReservationEntry {
 
     public boolean confirm() {
         if (state == State.EXPIRED) {
-            throw new IllegalStateException("No active reservation for " + reservation.orderId());
+            throw new ReservationUnavailableException(reservation.orderId());
         }
         if (state == State.CONFIRMED) {
             return false;

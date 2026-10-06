@@ -68,3 +68,5 @@ Compártenos un repositorio con el proyecto completo.
 
 - [Arquitectura y aplicación de SOLID](ARCHITECTURE.md)
 - [Decisiones, supuestos y preparación para producción](DECISIONS.md)
+
+- [Logging, trazabilidad y configuración de niveles](LOGGING.md)

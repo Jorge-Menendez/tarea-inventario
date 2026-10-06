@@ -4,7 +4,7 @@
 
 Se utiliza una arquitectura hexagonal ligera, explicada en [ARCHITECTURE.md](ARCHITECTURE.md). Se mantiene intacto `com.store.inventory.api` y la firma de `Inventory.create(Clock, StockAlertListener)`.
 
-Cada llamada a la fábrica crea un inventario independiente. El almacenamiento y las políticas se inyectan mediante puertos; el dominio encapsula sus campos mutables. No hay dependencias adicionales de producción.
+Cada llamada a la fábrica crea un inventario independiente. El almacenamiento y las políticas se inyectan mediante puertos; el dominio encapsula sus campos mutables. Se añadieron SLF4J y Logback para observabilidad; no hay frameworks de aplicación. La fábrica incorpora un decorador de trazabilidad.
 
 ## Reintentos y estados
 
@@ -43,6 +43,12 @@ Persistencia, integración real de pagos/correo, API HTTP, autenticación, cance
 
 ## Verificación
 
-`mvn -o test` con Java 21: **20 pruebas, cero fallos y cero errores**, incluidos los tres tests originales. Se cubren límites, plazos, vencimiento exacto, reintentos, confirmaciones repetidas, validación, alertas por reposición, fallo del listener, desbordamiento, concurrencia, independencia entre instancias y sustitución de políticas.
+`mvn -o test` con Java 21: **31 pruebas, cero fallos y cero errores**, incluidos los tres tests originales. Se cubren límites, plazos, vencimiento exacto, reintentos, confirmaciones repetidas, validación, alertas por reposición, fallo del listener, desbordamiento, concurrencia, independencia entre instancias y sustitución de políticas.
 
 Se fijan Maven Compiler 3.13.0 y Surefire 3.5.2. La ejecución offline utiliza las dependencias disponibles en la caché del entorno. En un entorno con Java 21 y acceso a Maven Central se puede ejecutar `mvn test`.
+
+## Observabilidad
+
+La configuración, niveles, eventos, campos de correlación y límites se describen en [LOGGING.md](LOGGING.md). Se registra cada operación de escritura en INFO y cada consulta en DEBUG, conservando un contexto MDC por llamada y restaurando el del llamador. Los reintentos tienen eventos distintos de las nuevas reservas y ventas. Los rechazos esperados son WARN; los fallos inesperados son ERROR y conservan su excepción. La subclase interna `ReservationUnavailableException` permite distinguir una confirmación rechazada de una inconsistencia interna sin cambiar el contrato público.
+
+Los logs de cambios no son una auditoría transaccional. La entrega de notificaciones continúa siendo de mejor esfuerzo. Las dependencias fijadas se probaron desde la caché local; antes de producción se deben revisar y mantener sus versiones.

@@ -11,14 +11,19 @@ import com.store.inventory.application.port.ReservationPolicies;
 import com.store.inventory.domain.ProductStock;
 import com.store.inventory.domain.ReservationEntry;
 import com.store.inventory.domain.ReservationPolicy;
+import com.store.inventory.domain.ReservationUnavailableException;
+import com.store.inventory.application.observability.LogValues;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Coordinates use cases; persistence and category rules are injected ports. */
 public final class DefaultInventoryService implements InventoryService {
-    private static final System.Logger LOG = System.getLogger(DefaultInventoryService.class.getName());
+    private static final Logger LOG = LoggerFactory.getLogger(DefaultInventoryService.class);
     private final Clock clock;
     private final StockAlertListener listener;
     private final InventoryStore store;
@@ -43,8 +48,10 @@ public final class DefaultInventoryService implements InventoryService {
                 if (existing.get().category() != category) {
                     throw new IllegalArgumentException("Product already has another category: " + sku);
                 }
+                LOG.info("event=product_registration_replayed sku={} category={}", LogValues.safe(sku), category);
             } else {
                 session.addProduct(sku, new ProductStock(category));
+                LOG.info("event=product_registered sku={} category={}", LogValues.safe(sku), category);
             }
             return null;
         });
@@ -58,7 +65,10 @@ public final class DefaultInventoryService implements InventoryService {
             ProductStock product = session.findProduct(sku)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown product: " + sku));
             expireReservations(session, clock.instant());
+            int before = product.availableUnits();
             product.replenish(quantity);
+            LOG.info("event=stock_replenished sku={} quantity={} availableBefore={} availableAfter={}",
+                    LogValues.safe(sku), quantity, before, product.availableUnits());
             return claimAlert(sku, product);
         });
         alert.ifPresent(this::notifyAlert);
@@ -74,15 +84,25 @@ public final class DefaultInventoryService implements InventoryService {
             expireReservations(session, now);
             Optional<ReservationEntry> existing = session.findOrder(orderId);
             if (existing.isPresent()) {
-                return new ReservationResult(existing.get().retry(sku, quantity), Optional.empty());
+                ReservationEntry order = existing.get();
+                Reservation reservation = order.retry(sku, quantity);
+                LOG.info("event=reservation_replayed orderId={} sku={} quantity={} status={} expiresAt={}",
+                        LogValues.safe(orderId), LogValues.safe(sku), quantity, order.status(), reservation.expiresAt());
+                return new ReservationResult(reservation, Optional.empty());
             }
             ProductStock product = session.findProduct(sku)
                     .orElseThrow(() -> new InsufficientStockException(sku, quantity, 0));
             ReservationPolicy policy = policies.forCategory(product.category());
+            LOG.debug("event=reservation_policy_resolved category={} lifetime={} orderLimit={}",
+                    product.category(), policy.lifetime(), policy.orderLimit());
             policy.validateQuantity(sku, quantity);
             Reservation reservation = new Reservation(orderId, sku, quantity, now.plus(policy.lifetime()));
+            int before = product.availableUnits();
             product.reserve(sku, quantity);
             session.addOrder(new ReservationEntry(reservation));
+            LOG.info("event=reservation_created orderId={} sku={} quantity={} expiresAt={} availableBefore={} availableAfter={}",
+                    LogValues.safe(orderId), LogValues.safe(sku), quantity, reservation.expiresAt(),
+                    before, product.availableUnits());
             return new ReservationResult(reservation, claimAlert(sku, product));
         });
         result.alert().ifPresent(this::notifyAlert);
@@ -95,10 +115,18 @@ public final class DefaultInventoryService implements InventoryService {
         store.executeExclusive(session -> {
             expireReservations(session, clock.instant());
             ReservationEntry order = session.findOrder(orderId)
-                    .orElseThrow(() -> new IllegalStateException("No active reservation for " + orderId));
+                    .orElseThrow(() -> new ReservationUnavailableException(orderId));
+            Reservation reservation = order.reservation();
             if (order.confirm()) {
-                Reservation reservation = order.reservation();
-                requiredProduct(session, reservation.sku()).sell(reservation.quantity());
+                ProductStock product = requiredProduct(session, reservation.sku());
+                product.sell(reservation.quantity());
+                LOG.info("event=reservation_confirmed orderId={} sku={} quantity={} availableAfter={}",
+                        LogValues.safe(orderId), LogValues.safe(reservation.sku()),
+                        reservation.quantity(), product.availableUnits());
+            } else {
+                LOG.info("event=confirmation_replayed orderId={} sku={} quantity={} status={}",
+                        LogValues.safe(orderId), LogValues.safe(reservation.sku()),
+                        reservation.quantity(), order.status());
             }
             return null;
         });
@@ -109,7 +137,11 @@ public final class DefaultInventoryService implements InventoryService {
         requireIdentifier(sku, "sku");
         return store.executeExclusive(session -> {
             expireReservations(session, clock.instant());
-            return session.findProduct(sku).map(ProductStock::availableUnits).orElse(0);
+            Optional<ProductStock> product = session.findProduct(sku);
+            int units = product.map(ProductStock::availableUnits).orElse(0);
+            LOG.debug("event=availability_read sku={} productRegistered={} availableUnits={}",
+                    LogValues.safe(sku), product.isPresent(), units);
+            return units;
         });
     }
 
@@ -117,7 +149,15 @@ public final class DefaultInventoryService implements InventoryService {
         for (ReservationEntry order : session.removeDueReservations(now)) {
             if (order.expire(now)) {
                 Reservation reservation = order.reservation();
-                requiredProduct(session, reservation.sku()).release(reservation.quantity());
+                ProductStock product = requiredProduct(session, reservation.sku());
+                int before = product.availableUnits();
+                product.release(reservation.quantity());
+                LOG.info("event=reservation_expired expiredOrderId={} expiredSku={} quantity={} expiresAt={} processedAt={} availableBefore={} availableAfter={}",
+                        LogValues.safe(reservation.orderId()), LogValues.safe(reservation.sku()),
+                        reservation.quantity(), reservation.expiresAt(), now, before, product.availableUnits());
+            } else {
+                LOG.debug("event=expiration_entry_discarded orderId={} status={}",
+                        LogValues.safe(order.reservation().orderId()), order.status());
             }
         }
     }
@@ -129,15 +169,26 @@ public final class DefaultInventoryService implements InventoryService {
 
     private static Optional<LowStockAlert> claimAlert(String sku, ProductStock product) {
         var units = product.claimLowStockAlert();
-        return units.isPresent() ? Optional.of(new LowStockAlert(sku, units.getAsInt())) : Optional.empty();
+        if (units.isPresent()) {
+            LOG.info("event=low_stock_alert_claimed sku={} availableUnits={}", LogValues.safe(sku), units.getAsInt());
+            return Optional.of(new LowStockAlert(sku, units.getAsInt()));
+        }
+        LOG.debug("event=low_stock_alert_not_required sku={} availableUnits={} reason=above_threshold_or_already_reported",
+                LogValues.safe(sku), product.availableUnits());
+        return Optional.empty();
     }
 
     private void notifyAlert(LowStockAlert alert) {
         // External code must run after the exclusive operation has finished.
+        long started = System.nanoTime();
+        LOG.info("event=notification_started sku={} availableUnits={}", LogValues.safe(alert.sku()), alert.availableUnits());
         try {
             listener.onLowStock(alert.sku(), alert.availableUnits());
+            LOG.info("event=notification_completed outcome=success sku={} durationMicros={}",
+                    LogValues.safe(alert.sku()), TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - started));
         } catch (RuntimeException failure) {
-            LOG.log(System.Logger.Level.WARNING, "Low stock notification failed for " + alert.sku(), failure);
+            LOG.warn("event=notification_failed outcome=failure inventoryChangePreserved=true retryScheduled=false sku={} durationMicros={}",
+                    LogValues.safe(alert.sku()), TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - started), failure);
         }
     }
 

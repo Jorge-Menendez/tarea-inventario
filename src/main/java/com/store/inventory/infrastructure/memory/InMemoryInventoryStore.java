@@ -13,15 +13,35 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.function.Function;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class InMemoryInventoryStore implements InventoryStore {
+    private static final Logger LOG = LoggerFactory.getLogger(InMemoryInventoryStore.class);
     private final Object lock = new Object();
     private final Session session = new Session();
 
     @Override
     public <T> T executeExclusive(Function<InventorySession, T> operation) {
-        synchronized (lock) {
-            return operation.apply(session);
+        long started = System.nanoTime();
+        long acquired = 0;
+        long finished = 0;
+        try {
+            synchronized (lock) {
+                acquired = System.nanoTime();
+                try {
+                    return operation.apply(session);
+                } finally {
+                    finished = System.nanoTime();
+                }
+            }
+        } finally {
+            if (acquired != 0) {
+                LOG.debug("event=store_operation_finished waitMicros={} exclusiveMicros={}",
+                        TimeUnit.NANOSECONDS.toMicros(acquired - started),
+                        TimeUnit.NANOSECONDS.toMicros(finished - acquired));
+            }
         }
     }
 

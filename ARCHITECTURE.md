@@ -5,8 +5,9 @@ La aplicación tiene dos cambios de infraestructura previstos por el reto: persi
 ```mermaid
 flowchart LR
     App[App / tests] --> API[InventoryService]
-    Factory[Inventory.create] --> Service[DefaultInventoryService]
-    API --> Service
+    Factory[Inventory.create] --> Trace[LoggingInventoryService]
+    API --> Trace
+    Trace --> Service[DefaultInventoryService]
     Service --> Domain[ProductStock / ReservationEntry / ReservationPolicy]
     Service --> Store[InventoryStore / InventorySession]
     Memory[InMemoryInventoryStore] -. implementa .-> Store
@@ -49,3 +50,7 @@ Para coordinar varias instancias se requieren restricciones únicas por pedido, 
 La entrega confiable de avisos exige una outbox transaccional y consumidores idempotentes. El listener actual constituye una integración síncrona de mejor esfuerzo.
 
 No se añaden microservicios, CQRS ni event sourcing: el reto no requiere despliegues separados, modelos de lectura distintos ni reconstrucción del inventario a partir de eventos.
+
+## Observabilidad
+
+`LoggingInventoryService` decora el puerto de entrada, registra el ciclo de cada operación y delimita el contexto MDC. `DefaultInventoryService` registra los cambios y decisiones relevantes; el adaptador mide espera y tiempo bajo el bloqueo. El dominio conserva su independencia del logger. `Inventory.create` conecta el decorador y el servicio. SLF4J proporciona la API y Logback implementa la salida configurable; consultar [LOGGING.md](LOGGING.md).
